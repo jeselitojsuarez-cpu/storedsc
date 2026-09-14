@@ -36,10 +36,9 @@ local Galaxy = {
 	instantKillBusy = false,
 	lastInstantKillHits = 0,
 	instantKillMaxHits = 60,
-	instantKillBurstHits = 8,
-	instantKillRetryDelay = 0,
-	instantKillDirectReports = 3,
-	instantKillGunShots = 5,
+	instantKillBurstHits = 12,
+	instantKillDirectReports = 5,
+	instantKillGunShots = 8,
 	instantKillGunShotDelay = 0,
 	instantKillPassDuration = 30,
 	instantKillCooldown = 0,
@@ -498,7 +497,6 @@ local function equipKnife()
 
 	if knife and humanoid then
 		humanoid:EquipTool(knife)
-		task.wait()
 		return character and character:FindFirstChild("Knife") or knife
 	end
 
@@ -551,7 +549,6 @@ local function equipCombatTool()
 		local tool = backpack:FindFirstChild(toolName)
 		if tool and tool:IsA("Tool") then
 			humanoid:EquipTool(tool)
-			task.wait()
 			return getEquippedTool() or tool
 		end
 	end
@@ -559,7 +556,6 @@ local function equipCombatTool()
 	for _, tool in ipairs(backpack:GetChildren()) do
 		if tool:IsA("Tool") and tool.Name ~= "Knife" then
 			humanoid:EquipTool(tool)
-			task.wait()
 			return getEquippedTool() or tool
 		end
 	end
@@ -1127,7 +1123,6 @@ local function reportInstantMeleeHit(enemy)
 	end
 
 	pcall(function()
-		reportHitRemote:FireServer({ forceShow = true })
 		reportHitRemote:FireServer({
 			kind = "melee",
 			targetUserId = enemyPlayer.UserId,
@@ -1203,6 +1198,11 @@ local function reportEnemyInstantKill(enemy)
 	end
 
 	local reported = false
+
+	-- Trigger the swing effect once before the lethal packet burst.
+	pcall(function()
+		reportHitRemote:FireServer({ forceShow = true })
+	end)
 
 	for _ = 1, Galaxy.instantKillDirectReports do
 		if not isEnemyStillAlive(enemy) then
@@ -2422,7 +2422,6 @@ local function stabEnemyWithKnife(enemy)
 	rootPart.AssemblyLinearVelocity = Vector3.zero
 	rootPart.AssemblyAngularVelocity = Vector3.zero
 	humanoid:Move(Vector3.zero, false)
-	task.wait()
 
 	for _ = 1, Galaxy.instantKillBurstHits do
 		if not isEnemyStillAlive(enemy) then
@@ -2465,45 +2464,6 @@ local function stabEnemyWithKnife(enemy)
 			at = workspace:GetServerTimeNow(),
 			backstab = true,
 		})
-
-		task.wait()
-	end
-
-	return true
-end
-
----Keep the local character behind an enemy.
----@param enemy Model
----@return boolean
-local function holdBehindEnemy(enemy)
-	localPlayer = playersService.LocalPlayer
-
-	if not localPlayer or not localPlayer.Character or not isEnemyStillAlive(enemy) then
-		return false
-	end
-
-	local character = localPlayer.Character
-	local rootPart = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local enemyRoot = enemy:FindFirstChild("HumanoidRootPart")
-		or enemy:FindFirstChild("Torso")
-		or enemy:FindFirstChild("UpperTorso")
-
-	if not rootPart or not enemyRoot then
-		return false
-	end
-
-	local attackPosition = enemyRoot.Position
-		- enemyRoot.CFrame.LookVector * INSTANT_KILL_BEHIND_DISTANCE
-		+ Vector3.new(0, 0.1, 0)
-	local attackCFrame = CFrame.new(attackPosition, enemyRoot.Position)
-
-	character:PivotTo(attackCFrame)
-	rootPart.AssemblyLinearVelocity = Vector3.zero
-	rootPart.AssemblyAngularVelocity = Vector3.zero
-
-	if humanoid then
-		humanoid:Move(Vector3.zero, false)
 	end
 
 	return true
@@ -2528,14 +2488,14 @@ local function runInstantKillPass()
 	local deadline = workspace:GetServerTimeNow() + Galaxy.instantKillPassDuration
 
 	while Galaxy.instantKill and isRoundLive() and workspace:GetServerTimeNow() <= deadline do
-		local hitThisCycle = false
 		local enemies = getEnemyCharacters()
 		if #enemies <= 0 then
 			break
 		end
 
+		-- Send lethal reports to every target before slower fallbacks can yield.
 		for _, enemy in ipairs(enemies) do
-			if not Galaxy.instantKill or not isRoundLive() then
+			if not Galaxy.instantKill then
 				break
 			end
 
@@ -2544,47 +2504,42 @@ local function runInstantKillPass()
 			end
 
 			if reportEnemyInstantKill(enemy) then
-				hitThisCycle = true
 				Galaxy.lastInstantKillHits += Galaxy.instantKillDirectReports * 2
+			end
+		end
 
-				if not isEnemyStillAlive(enemy) then
-					continue
-				end
+		-- Send gun packets to every survivor before any teleport fallback starts.
+		for _, enemy in ipairs(enemies) do
+			if not Galaxy.instantKill then
+				break
+			end
+
+			if not isEnemyStillAlive(enemy) then
+				continue
 			end
 
 			if shootEnemyWithGun(enemy) then
-				hitThisCycle = true
 				Galaxy.lastInstantKillHits += Galaxy.instantKillGunShots
+			end
+		end
 
-				if not isEnemyStillAlive(enemy) then
-					continue
-				end
+		-- Finish every remaining target in one no-yield teleport-stab sweep.
+		for _, enemy in ipairs(enemies) do
+			if not Galaxy.instantKill then
+				break
 			end
 
-			if not holdBehindEnemy(enemy) then
+			if not isEnemyStillAlive(enemy) then
 				continue
 			end
 
 			if stabEnemyWithKnife(enemy) then
-				hitThisCycle = true
 				Galaxy.lastInstantKillHits += Galaxy.instantKillBurstHits
 			end
-
-			local waitUntil = workspace:GetServerTimeNow() + Galaxy.instantKillRetryDelay
-			while
-				Galaxy.instantKill
-				and isRoundLive()
-				and isEnemyStillAlive(enemy)
-				and workspace:GetServerTimeNow() < waitUntil
-			do
-				holdBehindEnemy(enemy)
-				task.wait()
-			end
 		end
 
-		if not hitThisCycle then
-			task.wait()
-		end
+		-- Yield once per complete lobby sweep so replicated deaths can settle.
+		task.wait()
 	end
 
 	if localPlayer.Character then
@@ -2807,10 +2762,10 @@ function Galaxy.init()
 		local ok, error = pcall(function()
 			Galaxy.frameCount += 1
 			updateDeathTracker()
+			updateInstantKill()
 			updateCombat()
 			updateFovCircle()
 			updateEsp()
-			updateInstantKill()
 		end)
 
 		if not ok then
