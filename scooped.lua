@@ -725,8 +725,8 @@ local function initializeScript()
 	shared.PotentBeginner = PotentBeginner
 
 	window = rayfield:CreateWindow({
-		name = "Potent | UGC",
-		subtitle = "Rayfield Gen2",
+		name = "Galaxy",
+		subtitle = "zyke",
 		sidebarLayout = true,
 		theme = "cobalt",
 		showName = "Potent",
