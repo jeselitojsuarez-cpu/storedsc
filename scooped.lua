@@ -729,12 +729,12 @@ local function initializeScript()
 		subtitle = "zyke",
 		sidebarLayout = true,
 		theme = "cobalt",
-		showName = "Potent",
+		showName = "Galaxy",
 		configuration = {
 			autoSave = true,
 			autoLoad = true,
-			fileName = "PotentUGC",
-			customFolder = "Potent",
+			fileName = "Galaxy",
+			customFolder = "Galaxy",
 		},
 	})
 	local combatTab = window:CreateTab({ name = "Combat", icon = "crosshair" })
@@ -984,7 +984,7 @@ local function initializeScript()
 
 	window:Notify({
 		title = "Loaded",
-		content = "Potent | UGC is ready. Press K to toggle the GUI.",
+		content = "Galaxy is ready. Press K to toggle the GUI.",
 	})
 end
 
