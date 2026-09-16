@@ -939,7 +939,7 @@ local function initializeScript()
 		name = "Show Welcome Notification",
 		callback = function()
 			window:Notify({
-				title = "Potent | UGC",
+				title = "Galaxy",
 				content = "Press K to show or hide the interface.",
 			})
 		end,
