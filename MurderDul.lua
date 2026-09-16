@@ -35,13 +35,11 @@ local Galaxy = {
 	lastInstantKillKey = nil,
 	instantKillBusy = false,
 	lastInstantKillHits = 0,
-	instantKillMaxHits = 60,
-	instantKillBurstHits = 12,
-	instantKillDirectReports = 5,
-	instantKillGunShots = 8,
-	instantKillGunShotDelay = 0,
-	instantKillPassDuration = 30,
-	instantKillCooldown = 0,
+	instantKillPassDuration = 6,
+	instantKillCooldown = 0.15,
+	instantKillSweepDelay = 0.10,
+	instantKillHidePov = true,
+	lastInstantKillVisualUpdate = 0,
 	nextInstantKillAt = 0,
 	lastGunShotId = 0,
 	roundWasLive = false,
@@ -85,10 +83,7 @@ local localPlayer = playersService.LocalPlayer
 local currentCamera = workspace.CurrentCamera
 local charactersFolder = workspace:FindFirstChild("Characters")
 local remotesFolder = replicatedStorage:WaitForChild("Remotes")
-local bindablesFolder = replicatedStorage:WaitForChild("Bindables")
 local reportHitRemote = remotesFolder:WaitForChild("ReportHit")
-local shootReplicateRemote = remotesFolder:WaitForChild("ShootReplicate")
-local spawnBulletBindable = bindablesFolder:WaitForChild("SpawnBullet")
 local dragging = false
 local dragStart = nil
 local frameStart = nil
@@ -201,6 +196,9 @@ end
 ---Disconnect all connections and remove drawings.
 function Galaxy.detach()
 	updateGuiMouseUnlock(false)
+	if type(Galaxy.restoreInstantKillVisuals) == "function" then
+		pcall(Galaxy.restoreInstantKillVisuals)
+	end
 
 	pcall(function()
 		runService:UnbindFromRenderStep(RENDER_STEP_NAME)
@@ -476,31 +474,6 @@ local function getEnemyCharacters()
 	end)
 
 	return enemies
-end
-
----Equip the local player's knife when available.
----@return Tool?
-local function equipKnife()
-	localPlayer = playersService.LocalPlayer
-	if not localPlayer then
-		return nil
-	end
-
-	local character = localPlayer.Character
-	if character and character:FindFirstChild("Knife") then
-		return character.Knife
-	end
-
-	local backpack = localPlayer:FindFirstChildOfClass("Backpack")
-	local knife = backpack and backpack:FindFirstChild("Knife")
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
-	if knife and humanoid then
-		humanoid:EquipTool(knife)
-		return character and character:FindFirstChild("Knife") or knife
-	end
-
-	return nil
 end
 
 ---Return the currently equipped tool.
@@ -934,128 +907,6 @@ local function getClosestTriggerPart(character, screenPosition)
 	return closestPart, closestDistance
 end
 
----Return a high-damage body part for direct revolver hits.
----@param targetCharacter Model
----@return BasePart?
-local function getInstantKillGunPart(targetCharacter)
-	local preferredParts = {
-		"Head",
-		Galaxy.aimPart,
-		"UpperTorso",
-		"Torso",
-		"HumanoidRootPart",
-	}
-
-	for _, partName in ipairs(preferredParts) do
-		local part = targetCharacter:FindFirstChild(partName)
-		if part and part:IsA("BasePart") and isVisible(part) then
-			return part
-		end
-	end
-
-	return nil
-end
-
----Send a direct replicated revolver shot at one target.
----@param targetCharacter Model
----@param hitPart BasePart
----@return boolean
-local function fireGunInstantHit(targetCharacter, hitPart)
-	localPlayer = playersService.LocalPlayer
-	currentCamera = workspace.CurrentCamera
-
-	if not localPlayer or not localPlayer.Character or not targetCharacter or not hitPart then
-		return false
-	end
-
-	local rootPart = localPlayer.Character:FindFirstChild("HumanoidRootPart")
-		or localPlayer.Character:FindFirstChild("Torso")
-		or localPlayer.Character:FindFirstChild("UpperTorso")
-	local origin = currentCamera and currentCamera.CFrame.Position or rootPart and rootPart.Position
-	if not origin then
-		return false
-	end
-
-	local direction = hitPart.Position - origin
-	if direction.Magnitude <= 0 then
-		return false
-	end
-
-	Galaxy.lastGunShotId = math.max(Galaxy.lastGunShotId + 1, math.floor(os.clock() * 1000))
-
-	local hitPosition = hitPart.Position
-	local shotData = {
-		kind = "bullet",
-		mode = "single",
-		id = Galaxy.lastGunShotId,
-		reloadSoundDelay = nil,
-		segments = nil,
-		origin = origin,
-		firedAt = workspace:GetServerTimeNow(),
-		to = hitPosition,
-		hitInstance = hitPart,
-		hitPos = hitPosition,
-		hitNormal = -direction.Unit,
-		isCharacterHit = true,
-		ownerUserId = localPlayer.UserId,
-		effects = {
-			Ricochet = 0,
-			Barrage = 0,
-			Frost = 0,
-		},
-		chainHits = nil,
-		isADS = false,
-		bulletFx = nil,
-	}
-
-	pcall(function()
-		shootReplicateRemote:FireServer(shotData)
-	end)
-
-	pcall(function()
-		spawnBulletBindable:Fire(shotData)
-	end)
-
-	return true
-end
-
----Burst direct revolver hits into one enemy before they can react.
----@param enemy Model
----@return boolean
-local function shootEnemyWithGun(enemy)
-	if not isEnemyStillAlive(enemy) then
-		return false
-	end
-
-	local tool = equipCombatTool()
-	if not tool or tool.Name == "Knife" then
-		return false
-	end
-
-	local fired = false
-
-	for _ = 1, Galaxy.instantKillGunShots do
-		if not isEnemyStillAlive(enemy) then
-			break
-		end
-
-		local hitPart = getInstantKillGunPart(enemy)
-		if not hitPart then
-			break
-		end
-
-		if fireGunInstantHit(enemy, hitPart) then
-			fired = true
-		end
-
-		if Galaxy.instantKillGunShotDelay > 0 then
-			task.wait(Galaxy.instantKillGunShotDelay)
-		end
-	end
-
-	return fired
-end
-
 ---Return the best body part for direct hit reports without requiring camera line of sight.
 ---@param targetCharacter Model
 ---@return BasePart?
@@ -1189,7 +1040,7 @@ local function reportInstantThrowHit(enemy)
 	return true
 end
 
----Try the fastest remote report paths before falling back to movement.
+---Send a lightweight direct kill report without equipping or animating a weapon.
 ---@param enemy Model
 ---@return boolean
 local function reportEnemyInstantKill(enemy)
@@ -1197,32 +1048,13 @@ local function reportEnemyInstantKill(enemy)
 		return false
 	end
 
-	local reported = false
-
-	-- Trigger the swing effect once before the lethal packet burst.
-	pcall(function()
-		reportHitRemote:FireServer({ forceShow = true })
-	end)
-
-	for _ = 1, Galaxy.instantKillDirectReports do
-		if not isEnemyStillAlive(enemy) then
-			break
-		end
-
-		if reportInstantMeleeHit(enemy) then
-			reported = true
-		end
-
-		if not isEnemyStillAlive(enemy) then
-			break
-		end
-
-		if reportInstantThrowHit(enemy) then
-			reported = true
-		end
+	-- Prefer one direct head/throw report: one packet, no equip, no animation.
+	if reportInstantThrowHit(enemy) then
+		return true
 	end
 
-	return reported
+	-- Rare fallback if no valid throw hit part is available.
+	return reportInstantMeleeHit(enemy)
 end
 
 ---Return the target character that owns an instance.
@@ -2388,88 +2220,7 @@ local function shouldMobileTrigger(targetCharacter, aimPart, distance)
 	return true, targetCharacter, aimPart
 end
 
----Teleport behind one enemy and send a knife melee hit.
----@param enemy Model
----@return boolean
-local function stabEnemyWithKnife(enemy)
-	localPlayer = playersService.LocalPlayer
-
-	if not localPlayer or not localPlayer.Character or not isEnemyStillAlive(enemy) then
-		return false
-	end
-
-	local character = localPlayer.Character
-	local rootPart = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local enemyPlayer = playersService:FindFirstChild(enemy.Name)
-	local enemyRoot = enemy:FindFirstChild("HumanoidRootPart")
-		or enemy:FindFirstChild("Torso")
-		or enemy:FindFirstChild("UpperTorso")
-	local enemyHumanoid = enemy:FindFirstChildOfClass("Humanoid")
-
-	if not rootPart or not humanoid or not enemyPlayer or not enemyRoot or not enemyHumanoid then
-		return false
-	end
-
-	local knife = equipKnife()
-
-	local attackPosition = enemyRoot.Position
-		- enemyRoot.CFrame.LookVector * INSTANT_KILL_BEHIND_DISTANCE
-		+ Vector3.new(0, 0.1, 0)
-	local attackCFrame = CFrame.new(attackPosition, enemyRoot.Position)
-
-	character:PivotTo(attackCFrame)
-	rootPart.AssemblyLinearVelocity = Vector3.zero
-	rootPart.AssemblyAngularVelocity = Vector3.zero
-	humanoid:Move(Vector3.zero, false)
-
-	for _ = 1, Galaxy.instantKillBurstHits do
-		if not isEnemyStillAlive(enemy) then
-			break
-		end
-
-		enemyRoot = enemy:FindFirstChild("HumanoidRootPart")
-			or enemy:FindFirstChild("Torso")
-			or enemy:FindFirstChild("UpperTorso")
-		if not enemyRoot then
-			break
-		end
-
-		attackPosition = enemyRoot.Position
-			- enemyRoot.CFrame.LookVector * INSTANT_KILL_BEHIND_DISTANCE
-			+ Vector3.new(0, 0.1, 0)
-		attackCFrame = CFrame.new(attackPosition, enemyRoot.Position)
-		character:PivotTo(attackCFrame)
-		rootPart.AssemblyLinearVelocity = Vector3.zero
-		rootPart.AssemblyAngularVelocity = Vector3.zero
-
-		if knife then
-			pcall(function()
-				knife:Activate()
-			end)
-		end
-
-		if mouse1press and mouse1release then
-			pcall(mouse1press)
-			task.delay(0.012, function()
-				pcall(mouse1release)
-			end)
-		end
-		reportHitRemote:FireServer({ forceShow = true })
-		reportHitRemote:FireServer({
-			kind = "melee",
-			targetUserId = enemyPlayer.UserId,
-			targetModel = enemy,
-			direction = attackCFrame.LookVector,
-			at = workspace:GetServerTimeNow(),
-			backstab = true,
-		})
-	end
-
-	return true
-end
-
----Run a short teleport-stab pass after the round unlocks.
+---Run a lightweight instant-kill pass after the round unlocks.
 local function runInstantKillPass()
 	if Galaxy.instantKillBusy then
 		return
@@ -2484,7 +2235,6 @@ local function runInstantKillPass()
 		return
 	end
 
-	local originalCFrame = localPlayer.Character:GetPivot()
 	local deadline = workspace:GetServerTimeNow() + Galaxy.instantKillPassDuration
 
 	while Galaxy.instantKill and isRoundLive() and workspace:GetServerTimeNow() <= deadline do
@@ -2493,63 +2243,27 @@ local function runInstantKillPass()
 			break
 		end
 
-		-- Send lethal reports to every target before slower fallbacks can yield.
+		-- First try one direct packet pair per target. No Gun/Knife equip or animation.
 		for _, enemy in ipairs(enemies) do
 			if not Galaxy.instantKill then
 				break
 			end
 
-			if not isEnemyStillAlive(enemy) then
-				continue
-			end
-
-			if reportEnemyInstantKill(enemy) then
-				Galaxy.lastInstantKillHits += Galaxy.instantKillDirectReports * 2
+			if isEnemyStillAlive(enemy) and reportEnemyInstantKill(enemy) then
+				Galaxy.lastInstantKillHits += 1
 			end
 		end
 
-		-- Send gun packets to every survivor before any teleport fallback starts.
-		for _, enemy in ipairs(enemies) do
-			if not Galaxy.instantKill then
-				break
-			end
-
-			if not isEnemyStillAlive(enemy) then
-				continue
-			end
-
-			if shootEnemyWithGun(enemy) then
-				Galaxy.lastInstantKillHits += Galaxy.instantKillGunShots
-			end
-		end
-
-		-- Finish every remaining target in one no-yield teleport-stab sweep.
-		for _, enemy in ipairs(enemies) do
-			if not Galaxy.instantKill then
-				break
-			end
-
-			if not isEnemyStillAlive(enemy) then
-				continue
-			end
-
-			if stabEnemyWithKnife(enemy) then
-				Galaxy.lastInstantKillHits += Galaxy.instantKillBurstHits
-			end
-		end
-
-		-- Yield once per complete lobby sweep so replicated deaths can settle.
-		task.wait()
+		-- Let replicated deaths settle before the next lightweight sweep.
+		-- No teleport fallback and no Tool equip/activation are used here.
+		task.wait(Galaxy.instantKillSweepDelay)
 	end
 
-	if localPlayer.Character then
-		localPlayer.Character:PivotTo(originalCFrame)
-	end
-
+	Galaxy.nextInstantKillAt = workspace:GetServerTimeNow() + Galaxy.instantKillCooldown
 	Galaxy.instantKillBusy = false
 end
 
----Start a teleport-stab pass once after countdown unlock.
+---Start a lightweight direct-hit pass after countdown unlock.
 local function updateInstantKill()
 	local roundLive = isRoundLive()
 
@@ -2660,7 +2374,7 @@ local function updateCombat()
 	local triggerTargetCharacter = targetCharacter
 	local triggerHitPart = aimPart
 
-	if Galaxy.triggerbot and triggerReady then
+	if Galaxy.triggerbot and not Galaxy.instantKill and triggerReady then
 		if userInputService.TouchEnabled then
 			local mobileHit, mobileCharacter, mobilePart = shouldMobileTrigger(targetCharacter, aimPart, distance)
 			triggerHit = mobileHit
@@ -2673,6 +2387,7 @@ local function updateCombat()
 
 	if
 		Galaxy.triggerbot
+		and not Galaxy.instantKill
 		and triggerReady
 		and (
 			triggerHit
@@ -2684,6 +2399,83 @@ local function updateCombat()
 	then
 		Galaxy.lastTrigger = os.clock()
 		firePrimaryWeapon(triggerTargetCharacter, triggerHitPart)
+	end
+end
+
+
+-- Local-only FPS helper for Instant Kill. It hides first-person arms/tools instead of
+-- destroying them, so weapon controllers keep working and visuals can be restored.
+local instantKillHiddenParts = setmetatable({}, { __mode = "k" })
+
+local function shouldHideInstantKillPart(part)
+	local camera = workspace.CurrentCamera
+	if camera and part:IsDescendantOf(camera) then
+		-- Camera descendants are normally first-person arms/weapons/viewmodels.
+		return true
+	end
+
+	local lowerName = string.lower(part.Name or "")
+	if lowerName:find("hand") or lowerName:find("arm") then
+		return true
+	end
+
+	if lowerName:find("knife") or lowerName:find("gun") or lowerName:find("revolver") or lowerName:find("pistol") then
+		return true
+	end
+
+	return part:FindFirstAncestorOfClass("Tool") ~= nil
+end
+
+local function restoreInstantKillVisuals()
+	for part, oldModifier in pairs(instantKillHiddenParts) do
+		if part and part.Parent then
+			pcall(function()
+				part.LocalTransparencyModifier = oldModifier
+			end)
+		end
+		instantKillHiddenParts[part] = nil
+	end
+end
+
+Galaxy.restoreInstantKillVisuals = restoreInstantKillVisuals
+
+local function updateInstantKillVisuals()
+	if not Galaxy.instantKillHidePov then
+		restoreInstantKillVisuals()
+		return
+	end
+
+	local shouldHide = Galaxy.instantKill and Galaxy.inCombat
+	if not shouldHide then
+		restoreInstantKillVisuals()
+		return
+	end
+
+	-- Throttle visual scanning so this helper does not become its own FPS cost.
+	local now = os.clock()
+	if now - Galaxy.lastInstantKillVisualUpdate < 0.20 then
+		return
+	end
+	Galaxy.lastInstantKillVisualUpdate = now
+
+	local roots = {}
+	localPlayer = playersService.LocalPlayer
+	if localPlayer and localPlayer.Character then
+		table.insert(roots, localPlayer.Character)
+	end
+	if workspace.CurrentCamera then
+		table.insert(roots, workspace.CurrentCamera)
+	end
+
+	for _, root in ipairs(roots) do
+		for _, descendant in ipairs(root:GetDescendants()) do
+			if descendant:IsA("BasePart") and shouldHideInstantKillPart(descendant) then
+				if instantKillHiddenParts[descendant] == nil then
+					instantKillHiddenParts[descendant] = descendant.LocalTransparencyModifier
+				end
+				descendant.LocalTransparencyModifier = 1
+			end
+		end
 	end
 end
 
@@ -2764,6 +2556,7 @@ function Galaxy.init()
 			updateDeathTracker()
 			updateInstantKill()
 			updateCombat()
+			updateInstantKillVisuals()
 			updateFovCircle()
 			updateEsp()
 		end)
