@@ -27,13 +27,10 @@ local DUELING_GROUNDS_PLACE_ID = 94217045453265
 local DUELING_GROUNDS_URL =
 	"https://raw.githubusercontent.com/jeselitojsuarez-cpu/storedsc/refs/heads/main/Dulgrounds.lua"
 
---// Scooped
--- 93466613073564 is the main PlaceId. All modes (including Beginner)
--- share the same universe, whose GameId is 9891453691.
-local SCOOPED_GAME_ID = 9891453691
-local SCOOPED_PLACE_ID = 93466613073564
-local SCOOPED_URL =
-	"https://raw.githubusercontent.com/jeselitojsuarez-cpu/storedsc/refs/heads/main/scooped.lua"
+--// The Strongest Battlegrounds
+local TSB_PLACE_ID = 10449761463
+local TSB_URL =
+	"https://raw.githubusercontent.com/jeselitojsuarez-cpu/storedsc/refs/heads/main/tsb.lua"
 
 -- Get the universe/GameId that the Sniper Arena lobby belongs to.
 local function getUniverseId(placeId)
@@ -76,10 +73,9 @@ elseif game.PlaceId == DUELING_GROUNDS_PLACE_ID then
 
 	loadstring(game:HttpGet(DUELING_GROUNDS_URL))()
 
-elseif game.GameId == SCOOPED_GAME_ID
-	or game.PlaceId == SCOOPED_PLACE_ID then
+elseif game.PlaceId == TSB_PLACE_ID then
 
-	loadstring(game:HttpGet(SCOOPED_URL))()
+	loadstring(game:HttpGet(TSB_URL))()
 
 else
 	Players.LocalPlayer:Kick(
